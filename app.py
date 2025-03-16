@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import requests
+import json
 import os
 import datetime
 import plotly.express as px
@@ -19,13 +21,80 @@ DATA_FILE = 'workout_data.csv'
 
 # Функции для работы с данными
 def load_data():
-    if os.path.exists(DATA_FILE):
-        return pd.read_csv(DATA_FILE)
-    else:
+    gist_id = os.environ.get('GIST_ID')
+    github_token = os.environ.get('GITHUB_TOKEN')
+    
+    if not gist_id or not github_token:
+        if os.path.exists(DATA_FILE):
+            return pd.read_csv(DATA_FILE)
+        else:
+            return pd.DataFrame(columns=['Дата', 'Тренировка', 'Упражнение', 'Подход', 'Повторения', 'Вес'])
+    
+    headers = {
+        'Authorization': f'token {github_token}',
+        'Accept': 'application/vnd.github.v3+json'
+    }
+    
+    try:
+        response = requests.get(
+            f'https://api.github.com/gists/{gist_id}',
+            headers=headers
+        )
+        
+        if response.status_code == 200:
+            gist_data = response.json()
+            if 'workout_data.csv' in gist_data['files']:
+                content = gist_data['files']['workout_data.csv']['content']
+                # Используем StringIO для чтения CSV из строки
+                from io import StringIO
+                return pd.read_csv(StringIO(content))
+        
+        # Если что-то пошло не так, возвращаем пустой DataFrame
+        return pd.DataFrame(columns=['Дата', 'Тренировка', 'Упражнение', 'Подход', 'Повторения', 'Вес'])
+    
+    except Exception as e:
+        st.error(f"Ошибка при загрузке данных: {e}")
         return pd.DataFrame(columns=['Дата', 'Тренировка', 'Упражнение', 'Подход', 'Повторения', 'Вес'])
 
 def save_data(df):
+    # Сначала сохраняем локально как резервную копию
     df.to_csv(DATA_FILE, index=False)
+    
+    # Затем пытаемся сохранить в GitHub Gist
+    save_data_to_gist(df)
+
+def save_data_to_gist(df):
+    gist_id = os.environ.get('GIST_ID')
+    github_token = os.environ.get('GITHUB_TOKEN')
+    
+    if not gist_id or not github_token:
+        st.warning("Gist ID или GitHub Token не настроены. Данные сохранены только локально.")
+        return
+    
+    headers = {
+        'Authorization': f'token {github_token}',
+        'Accept': 'application/vnd.github.v3+json'
+    }
+    
+    payload = {
+        "files": {
+            "workout_data.csv": {
+                "content": df.to_csv(index=False)
+            }
+        }
+    }
+    
+    try:
+        response = requests.patch(
+            f'https://api.github.com/gists/{gist_id}',
+            headers=headers,
+            data=json.dumps(payload)
+        )
+        
+        if response.status_code != 200:
+            st.error(f"Ошибка при сохранении данных в Gist: {response.status_code}")
+    except Exception as e:
+        st.error(f"Ошибка при сохранении данных: {e}")
 
 def add_workout_data(date, workout, exercise, set_num, reps, weight):
     df = load_data()
@@ -181,5 +250,8 @@ st.sidebar.markdown("---")
 st.sidebar.info("""
     **О программе:**
     Это простое приложение для отслеживания тренировок в зале.
-    Данные сохраняются в файл 'workout_data.csv'.
+    
+    Данные сохраняются в GitHub Gist при наличии настроенных
+    переменных окружения GIST_ID и GITHUB_TOKEN или
+    локально в файл 'workout_data.csv'.
 """)
