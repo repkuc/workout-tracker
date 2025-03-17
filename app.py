@@ -1,10 +1,13 @@
 import streamlit as st
 import pandas as pd
-import requests
-import json
 import os
 import datetime
 import plotly.express as px
+import requests
+import json
+from io import StringIO
+import calendar
+from datetime import timedelta
 
 # Настройка страницы
 st.set_page_config(page_title="Трекер тренировок", layout="wide")
@@ -45,8 +48,6 @@ def load_data():
             gist_data = response.json()
             if 'workout_data.csv' in gist_data['files']:
                 content = gist_data['files']['workout_data.csv']['content']
-                # Используем StringIO для чтения CSV из строки
-                from io import StringIO
                 return pd.read_csv(StringIO(content))
         
         # Если что-то пошло не так, возвращаем пустой DataFrame
@@ -110,6 +111,65 @@ def add_workout_data(date, workout, exercise, set_num, reps, weight):
     save_data(df)
     return df
 
+def get_workout_dates(data):
+    """Получить даты тренировок с информацией о типе тренировки"""
+    if data.empty:
+        return {}
+    
+    # Группируем данные по дате и тренировке
+    workout_dates = data.groupby(['Дата', 'Тренировка']).size().reset_index()
+    workout_dates = workout_dates[['Дата', 'Тренировка']]
+    
+    # Создаем словарь, где ключи - даты, значения - типы тренировок
+    date_workout_dict = {}
+    for _, row in workout_dates.iterrows():
+        date = row['Дата']
+        workout = row['Тренировка']
+        date_workout_dict[date] = workout
+    
+    return date_workout_dict
+
+def get_previous_workout_data(data, workout, exercise):
+    """Получить данные предыдущей тренировки для указанного упражнения"""
+    if data.empty:
+        return None
+    
+    # Фильтруем данные по тренировке и упражнению
+    filtered_data = data[(data['Тренировка'] == workout) & (data['Упражнение'] == exercise)]
+    
+    if filtered_data.empty:
+        return None
+    
+    # Находим последнюю дату тренировки для этого упражнения
+    last_date = filtered_data['Дата'].max()
+    
+    # Получаем данные этой тренировки
+    last_workout_data = filtered_data[filtered_data['Дата'] == last_date]
+    
+    return last_workout_data
+
+def recommend_next_workout(data):
+    """Рекомендовать следующую тренировку на основе истории"""
+    if data.empty:
+        return "Тренировка A"  # Если нет данных, начинаем с тренировки A
+    
+    # Получаем уникальные даты тренировок
+    workout_dates = get_workout_dates(data)
+    
+    if not workout_dates:
+        return "Тренировка A"
+    
+    # Получаем последнюю дату тренировки и ее тип
+    last_date = max(workout_dates.keys())
+    last_workout = workout_dates[last_date]
+    
+    # Определяем следующую тренировку по циклу
+    workout_order = ["Тренировка A", "Тренировка B", "Тренировка C", "Тренировка D"]
+    current_index = workout_order.index(last_workout)
+    next_index = (current_index + 1) % len(workout_order)
+    
+    return workout_order[next_index]
+
 # Загрузка данных
 data = load_data()
 
@@ -117,9 +177,81 @@ data = load_data()
 st.title("Трекер тренировок в зале")
 
 # Боковая панель для выбора режима
-mode = st.sidebar.radio("Выберите режим", ["Запись тренировки", "История тренировок", "Анализ прогресса"])
+mode = st.sidebar.radio("Выберите режим", ["Календарь", "Запись тренировки", "История тренировок", "Анализ прогресса"])
 
-if mode == "Запись тренировки":
+if mode == "Календарь":
+    st.header("Календарь тренировок")
+    
+    # Получаем текущую дату и выбираем месяц
+    current_date = datetime.date.today()
+    month = st.selectbox("Выберите месяц", 
+                         range(1, 13), 
+                         index=current_date.month-1, 
+                         format_func=lambda x: calendar.month_name[x])
+    year = st.selectbox("Выберите год", 
+                        range(current_date.year - 1, current_date.year + 2), 
+                        index=1)
+    
+    # Создаем календарь
+    cal = calendar.monthcalendar(year, month)
+    
+    # Получаем данные о тренировках
+    workout_dates = get_workout_dates(data)
+    
+    # Отображаем календарь
+    st.write("### Календарь тренировок")
+    
+    # Названия дней недели
+    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    
+    # Создаем таблицу календаря
+    cols = st.columns(7)
+    for i, day in enumerate(days):
+        cols[i].markdown(f"**{day}**")
+    
+    # Заполняем календарь
+    for week in cal:
+        cols = st.columns(7)
+        for i, day in enumerate(week):
+            if day == 0:
+                cols[i].write("")
+            else:
+                date_str = f"{year}-{month:02d}-{day:02d}"
+                
+                # Проверяем, была ли тренировка в этот день
+                if date_str in workout_dates:
+                    workout_type = workout_dates[date_str]
+                    # Определяем цвет в зависимости от типа тренировки
+                    if workout_type == "Тренировка A":
+                        bgcolor = "#ff9999"  # Красный
+                    elif workout_type == "Тренировка B":
+                        bgcolor = "#99ff99"  # Зеленый
+                    elif workout_type == "Тренировка C":
+                        bgcolor = "#9999ff"  # Синий
+                    else:
+                        bgcolor = "#ffff99"  # Желтый
+                        
+                    cols[i].markdown(f"""
+                    <div style="background-color: {bgcolor}; padding: 5px; border-radius: 5px; text-align: center;">
+                        {day}<br/>{workout_type[10:]}
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    cols[i].write(f"{day}")
+    
+    # Легенда
+    st.write("### Легенда")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.markdown('<div style="background-color: #ff9999; padding: 5px; border-radius: 5px; text-align: center;">Тренировка A</div>', unsafe_allow_html=True)
+    col2.markdown('<div style="background-color: #99ff99; padding: 5px; border-radius: 5px; text-align: center;">Тренировка B</div>', unsafe_allow_html=True)
+    col3.markdown('<div style="background-color: #9999ff; padding: 5px; border-radius: 5px; text-align: center;">Тренировка C</div>', unsafe_allow_html=True)
+    col4.markdown('<div style="background-color: #ffff99; padding: 5px; border-radius: 5px; text-align: center;">Тренировка D</div>', unsafe_allow_html=True)
+    
+    # Рекомендация следующей тренировки
+    next_workout = recommend_next_workout(data)
+    st.info(f"Рекомендуемая следующая тренировка: **{next_workout}**")
+
+elif mode == "Запись тренировки":
     st.header("Запись новой тренировки")
     
     # Выбор даты и тренировки
@@ -127,45 +259,110 @@ if mode == "Запись тренировки":
     with col1:
         date = st.date_input("Дата тренировки", datetime.date.today())
     with col2:
-        workout = st.selectbox("Выберите программу тренировки", list(WORKOUTS.keys()))
+        # Рекомендуем следующую тренировку
+        recommended_workout = recommend_next_workout(data)
+        workout = st.selectbox("Выберите программу тренировки", 
+                               list(WORKOUTS.keys()),
+                               index=list(WORKOUTS.keys()).index(recommended_workout))
     
     # Создаем таблицу для ввода данных по всем упражнениям
     st.subheader(f"Упражнения для {workout}")
     
-    for exercise in WORKOUTS[workout]:
-        st.write(f"## {exercise}")
-        sets_data = []
-        
-        cols = st.columns(3)
-        sets = cols[0].number_input(f"Количество подходов для {exercise}", min_value=1, max_value=5, value=3, key=f"sets_{exercise}")
-        
-        for i in range(1, sets + 1):
-            col1, col2 = st.columns(2)
-            with col1:
-                reps = st.number_input(f"Повторения (подход {i})", min_value=1, max_value=100, value=10, key=f"{exercise}_reps_{i}")
-            with col2:
-                weight = st.number_input(f"Вес, кг (подход {i})", min_value=0.0, max_value=500.0, value=20.0, step=2.5, key=f"{exercise}_weight_{i}")
-            sets_data.append((i, reps, weight))
-        
-        # Показываем последние данные для этого упражнения
-        if not data.empty:
-            last_workout = data[(data['Тренировка'] == workout) & (data['Упражнение'] == exercise)]
-            if not last_workout.empty:
-                last_date = last_workout['Дата'].max()
-                st.info(f"Последняя тренировка ({last_date}):")
-                last_results = last_workout[last_workout['Дата'] == last_date]
-                for _, row in last_results.iterrows():
-                    st.text(f"Подход {row['Подход']}: {row['Повторения']} повторений × {row['Вес']} кг")
-
-        # Кнопка для сохранения данных для этого упражнения
-        if st.button(f"Сохранить данные для {exercise}", key=f"save_{exercise}"):
-            for set_num, reps, weight in sets_data:
-                data = add_workout_data(str(date), workout, exercise, set_num, reps, weight)
-            st.success(f"Данные для {exercise} сохранены!")
+    # Создаем вкладки для каждого упражнения
+    tabs = st.tabs([exercise for exercise in WORKOUTS[workout]])
     
-    # Кнопка для сохранения всей тренировки сразу
-    if st.button("Сохранить всю тренировку", type="primary"):
-        st.warning("Для сохранения данных используйте кнопки для каждого упражнения")
+    for i, exercise in enumerate(WORKOUTS[workout]):
+        with tabs[i]:
+            # Получаем данные предыдущей тренировки
+            prev_workout_data = get_previous_workout_data(data, workout, exercise)
+            
+            # Определяем количество подходов (по умолчанию 3, но можно изменить)
+            sets = st.number_input(f"Количество подходов", min_value=1, max_value=5, value=3, key=f"sets_{exercise}")
+            
+            # Создаем контейнер для подходов
+            for set_num in range(1, sets + 1):
+                st.write(f"### Подход {set_num}")
+                
+                # Значения по умолчанию из предыдущей тренировки
+                default_reps = 10
+                default_weight = 20.0
+                
+                if prev_workout_data is not None and not prev_workout_data.empty:
+                    # Находим данные для этого подхода
+                    set_data = prev_workout_data[prev_workout_data['Подход'] == set_num]
+                    if not set_data.empty:
+                        default_reps = int(set_data.iloc[0]['Повторения'])
+                        default_weight = float(set_data.iloc[0]['Вес'])
+                
+                # Статус подхода (выполнен или нет)
+                set_status = st.checkbox(f"Подход выполнен", key=f"{exercise}_status_{set_num}")
+                
+                if set_status:
+                    # Если подход выполнен, показываем поля для ввода данных
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        reps = st.number_input(f"Повторения", 
+                                              min_value=1, 
+                                              max_value=100, 
+                                              value=default_reps, 
+                                              key=f"{exercise}_reps_{set_num}")
+                    with col2:
+                        weight = st.number_input(f"Вес (кг)", 
+                                                min_value=0.0, 
+                                                max_value=500.0, 
+                                                value=default_weight,
+                                                step=2.5, 
+                                                key=f"{exercise}_weight_{set_num}")
+                    
+                    # Меняем стиль, чтобы показать, что подход выполнен
+                    st.markdown("""
+                    <style>
+                    div[data-testid="stCheckbox"]:has(input:checked) + div {
+                        background-color: #d4f7d4;
+                        padding: 10px;
+                        border-radius: 5px;
+                    }
+                    </style>
+                    """, unsafe_allow_html=True)
+                else:
+                    # Если подход не выполнен, показываем данные предыдущей тренировки
+                    st.info(f"Предыдущий результат: {default_reps} повторений × {default_weight} кг")
+                    # Скрытые поля для сохранения значений
+                    reps = st.number_input(f"Повторения (скрыто)", 
+                                          min_value=1, 
+                                          max_value=100, 
+                                          value=default_reps, 
+                                          key=f"{exercise}_hidden_reps_{set_num}",
+                                          label_visibility="collapsed")
+                    weight = st.number_input(f"Вес (скрыто)", 
+                                            min_value=0.0, 
+                                            max_value=500.0, 
+                                            value=default_weight,
+                                            step=2.5, 
+                                            key=f"{exercise}_hidden_weight_{set_num}",
+                                            label_visibility="collapsed")
+            
+            # Кнопка для сохранения данных для этого упражнения
+            if st.button(f"Сохранить {exercise}", key=f"save_{exercise}", type="primary"):
+                # Сохраняем только выполненные подходы
+                saved = False
+                for set_num in range(1, sets + 1):
+                    # Проверяем статус подхода
+                    set_status = st.session_state.get(f"{exercise}_status_{set_num}", False)
+                    if set_status:
+                        # Получаем значения из соответствующих полей
+                        reps = st.session_state.get(f"{exercise}_reps_{set_num}", default_reps)
+                        weight = st.session_state.get(f"{exercise}_weight_{set_num}", default_weight)
+                        
+                        # Сохраняем данные
+                        data = add_workout_data(str(date), workout, exercise, set_num, reps, weight)
+                        saved = True
+                
+                if saved:
+                    st.success(f"Данные для {exercise} сохранены!")
+                else:
+                    st.warning("Нет выполненных подходов для сохранения!")
 
 elif mode == "История тренировок":
     st.header("История тренировок")
@@ -188,11 +385,27 @@ elif mode == "История тренировок":
     filtered_data = filtered_data.sort_values(by=['Дата', 'Тренировка', 'Упражнение', 'Подход'], ascending=[False, True, True, True])
     
     if not filtered_data.empty:
-        st.dataframe(filtered_data, use_container_width=True)
+        # Группируем по дате и тренировке для более удобного просмотра
+        unique_date_workouts = filtered_data[['Дата', 'Тренировка']].drop_duplicates()
         
-        # Опция удаления записей
-        if st.button("Удалить выбранные записи"):
-            st.warning("Функция удаления записей будет добавлена в следующей версии")
+        for _, row in unique_date_workouts.iterrows():
+            date_str = row['Дата']
+            workout_type = row['Тренировка']
+            
+            with st.expander(f"{date_str} - {workout_type}"):
+                # Показываем данные для этой даты и тренировки
+                day_data = filtered_data[(filtered_data['Дата'] == date_str) & 
+                                         (filtered_data['Тренировка'] == workout_type)]
+                
+                # Группируем по упражнениям
+                for exercise in sorted(day_data['Упражнение'].unique()):
+                    st.write(f"#### {exercise}")
+                    
+                    # Получаем данные для этого упражнения
+                    exercise_data = day_data[day_data['Упражнение'] == exercise]
+                    
+                    # Создаем таблицу
+                    st.table(exercise_data[['Подход', 'Повторения', 'Вес']])
     else:
         st.info("Нет данных для отображения. Записывайте свои тренировки в режиме 'Запись тренировки'.")
 
@@ -209,39 +422,61 @@ else:  # Анализ прогресса
         exercise_data = data[data['Упражнение'] == exercise].copy()
         
         if not exercise_data.empty:
-            # Подготовка данных для графика
-            # Вычисляем максимальные значения веса и повторений для каждой даты
-            max_values = exercise_data.groupby('Дата').agg({'Вес': 'max', 'Повторения': 'max'}).reset_index()
+            # Преобразуем даты в формат datetime для корректной сортировки
+            exercise_data['Дата'] = pd.to_datetime(exercise_data['Дата'])
+            exercise_data = exercise_data.sort_values('Дата')
+            
+            # Вычисляем лучшие показатели для каждой тренировки
+            best_results = exercise_data.groupby('Дата').agg({
+                'Повторения': 'max',
+                'Вес': 'max'
+            }).reset_index()
+            
+            # Преобразуем даты обратно в строки для отображения
+            best_results['Дата'] = best_results['Дата'].dt.strftime('%Y-%m-%d')
+            exercise_data['Дата'] = exercise_data['Дата'].dt.strftime('%Y-%m-%d')
             
             # График изменения максимального веса
             st.subheader(f"Прогресс по весу - {exercise}")
-            fig_weight = px.line(max_values, x='Дата', y='Вес', markers=True)
+            fig_weight = px.line(best_results, x='Дата', y='Вес', markers=True,
+                                title=f"Изменение максимального веса для {exercise}")
+            fig_weight.update_layout(xaxis_title="Дата", yaxis_title="Вес (кг)")
             st.plotly_chart(fig_weight, use_container_width=True)
             
             # График изменения максимальных повторений
             st.subheader(f"Прогресс по повторениям - {exercise}")
-            fig_reps = px.line(max_values, x='Дата', y='Повторения', markers=True)
+            fig_reps = px.line(best_results, x='Дата', y='Повторения', markers=True,
+                              title=f"Изменение максимальных повторений для {exercise}")
+            fig_reps.update_layout(xaxis_title="Дата", yaxis_title="Повторения")
             st.plotly_chart(fig_reps, use_container_width=True)
             
             # Статистика
             st.subheader("Статистика")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Максимальный вес", f"{max_values['Вес'].max()} кг")
+                st.metric("Максимальный вес", f"{best_results['Вес'].max()} кг")
             with col2:
-                st.metric("Максимальные повторения", int(max_values['Повторения'].max()))
+                st.metric("Максимальные повторения", int(best_results['Повторения'].max()))
             with col3:
-                if len(max_values) >= 2:
-                    first_weight = max_values.iloc[0]['Вес']
-                    last_weight = max_values.iloc[-1]['Вес']
+                if len(best_results) >= 2:
+                    first_weight = best_results['Вес'].iloc[0]
+                    last_weight = best_results['Вес'].iloc[-1]
                     progress = ((last_weight - first_weight) / first_weight) * 100 if first_weight > 0 else 0
                     st.metric("Прогресс по весу", f"{progress:.1f}%")
                 else:
                     st.metric("Прогресс по весу", "Недостаточно данных")
             
-            # Таблица с детальными данными
-            st.subheader("Все записи для упражнения")
-            st.dataframe(exercise_data.sort_values(by=['Дата', 'Подход'], ascending=[False, True]))
+            # Таблица с детальными данными по дням
+            st.subheader("История тренировок")
+            
+            # Группируем по датам для удобства просмотра
+            unique_dates = sorted(exercise_data['Дата'].unique(), reverse=True)
+            
+            for date in unique_dates:
+                with st.expander(f"Тренировка {date}"):
+                    date_data = exercise_data[exercise_data['Дата'] == date]
+                    st.table(date_data[['Подход', 'Повторения', 'Вес']])
+                    
         else:
             st.info(f"Нет данных для упражнения '{exercise}'")
 
@@ -249,9 +484,33 @@ else:  # Анализ прогресса
 st.sidebar.markdown("---")
 st.sidebar.info("""
     **О программе:**
-    Это простое приложение для отслеживания тренировок в зале.
+    Трекер тренировок с календарем и анализом прогресса.
     
     Данные сохраняются в GitHub Gist при наличии настроенных
-    переменных окружения GIST_ID и GITHUB_TOKEN или
-    локально в файл 'workout_data.csv'.
+    переменных GIST_ID и GITHUB_TOKEN.
 """)
+
+# Добавляем стили для мобильного устройства
+st.markdown("""
+<style>
+    /* Улучшение для мобильных устройств */
+    @media (max-width: 768px) {
+        .stNumberInput input {
+            font-size: 16px;
+            height: 40px;
+        }
+        .stButton button {
+            width: 100%;
+            height: 50px;
+            font-size: 18px;
+        }
+        .stTabs button {
+            font-size: 14px;
+        }
+        /* Увеличиваем кнопки в календаре */
+        div.calendar button {
+            min-height: 40px !important;
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
